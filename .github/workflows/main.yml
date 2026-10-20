@@ -1,4 +1,3 @@
-yaml
 name: Build Mod
 
 on:
@@ -9,16 +8,8 @@ on:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - name: Windows
-            os: windows-latest
-
-    name: ${{ matrix.config.name }}
-    runs-on: ${{ matrix.config.os }}
-
+    name: Windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +22,6 @@ jobs:
     name: Package builds
     runs-on: ubuntu-latest
     needs: ['build']
-
     steps:
       - uses: geode-sdk/build-geode-mod/combine@main
         id: build
