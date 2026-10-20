@@ -1,101 +1,122 @@
 #include <Geode/Geode.hpp>
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-#include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 
-#include <ctime>
-#include <fstream>
-
-#include "Analyzer.hpp"
-#include "Hud.hpp"
-
 using namespace geode::prelude;
-using dynamic::Analyzer;
+
+// Dynamic: click buffer.
+// If you press the jump button a few frames before you could actually use it
+// (landing on the ground, touching an orb), the press is remembered and applied
+// the moment it becomes usable, as long as that happens within the buffer window.
 
 namespace {
-	size_t minClicks() {
-		return static_cast<size_t>(Mod::get()->getSettingValue<int64_t>("min-clicks"));
+	bool enabled() { return Mod::get()->getSettingValue<bool>("enabled"); }
+	bool bufferOrbs() { return Mod::get()->getSettingValue<bool>("buffer-orbs"); }
+	bool bufferGround() { return Mod::get()->getSettingValue<bool>("buffer-ground"); }
+	// Window length in seconds. "Frames" are frames of a 60 FPS recording.
+	double windowSeconds() {
+		return static_cast<double>(Mod::get()->getSettingValue<int64_t>("buffer-frames")) / 60.0;
 	}
-	double windowMs() {
-		return static_cast<double>(Mod::get()->getSettingValue<int64_t>("input-window-ms"));
+
+	bool groundBufferable(PlayerObject* p) {
+		// Cube, ball, robot and spider jump from the ground. Ship, UFO, wave and swing do not.
+		return !(p->m_isShip || p->m_isBird || p->m_isDart || p->m_isSwing);
 	}
 }
 
-// Real hardware input: keyboard (key repeats are ignored).
-class $modify(DynKeyboard, CCKeyboardDispatcher) {
-	bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
-		if (!repeat) Analyzer::get().rawInput();
-		return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
-	}
-};
+class $modify(DynBuffer, GJBaseGameLayer) {
+	struct Pending {
+		bool active = false;        // a press is waiting to be used
+		double time = 0.0;          // level time of the press
+		bool realHeld = false;      // is the physical button held down right now?
+		bool injectedHeld = false;  // did we send a press that still needs releasing?
+		double injectTime = 0.0;
+	};
 
-// Real hardware input: mouse / touch (type 0 = began, 2 = ended).
-class $modify(DynTouch, CCTouchDispatcher) {
-	void touches(CCSet* touches, CCEvent* event, unsigned int type) {
-		if (type == 0 || type == 2) Analyzer::get().rawInput();
-		CCTouchDispatcher::touches(touches, event, type);
-	}
-};
+	struct Fields {
+		Pending p[2];
+	};
 
-// In-game click handling and per-frame timing.
-class $modify(DynGameLayer, GJBaseGameLayer) {
-	void update(float dt) {
-		if (PlayLayer::get() == reinterpret_cast<PlayLayer*>(this)) {
-			Analyzer::get().beginFrame(windowMs());
-		}
-		GJBaseGameLayer::update(dt);
+	bool isActivePlay() {
+		auto pl = PlayLayer::get();
+		return pl && static_cast<GJBaseGameLayer*>(pl) == this;
 	}
 
 	void handleButton(bool down, int button, bool isPlayer1) {
-		auto pl = PlayLayer::get();
-		if (pl && pl == reinterpret_cast<PlayLayer*>(this)) {
-			bool skip = pl->m_isPracticeMode && Mod::get()->getSettingValue<bool>("ignore-practice");
-			if (!skip) {
-				Analyzer::get().onButton(down, button, m_gameState.m_currentProgress);
-			}
+		if (button != 1 || !enabled() || !this->isActivePlay()) {
+			GJBaseGameLayer::handleButton(down, button, isPlayer1);
+			return;
 		}
+
+		int i = isPlayer1 ? 0 : 1;
+		auto player = isPlayer1 ? m_player1 : m_player2;
+		auto& p = m_fields->p[i];
+
+		if (down) {
+			p.realHeld = true;
+			// If the press can't be used right now, remember it.
+			if (player && !player->m_isDead && !player->m_isOnGround && player->m_touchedRings.empty()) {
+				p.active = true;
+				p.time = m_gameState.m_levelTime;
+			} else {
+				p.active = false;
+			}
+		} else {
+			p.realHeld = false;
+			p.injectedHeld = false;
+		}
+
 		GJBaseGameLayer::handleButton(down, button, isPlayer1);
 	}
-};
 
-class $modify(DynPlayLayer, PlayLayer) {
-	void setupHasCompleted() {
-		PlayLayer::setupHasCompleted();
-		Analyzer::get().reset();
-		if (Mod::get()->getSettingValue<bool>("show-hud")) {
-			auto hud = DynamicHud::create();
-			hud->setID("dynamic-hud"_spr);
-			this->addChild(hud, 1000);
+	void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+		if (enabled() && this->isActivePlay()) {
+			this->bufferStep();
 		}
+		GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
 	}
 
-	void resetLevel() {
-		PlayLayer::resetLevel();
-		Analyzer::get().reset();
-	}
+	void bufferStep() {
+		double now = m_gameState.m_levelTime;
+		double window = windowSeconds();
 
-	void levelComplete() {
-		PlayLayer::levelComplete();
+		for (int i = 0; i < 2; ++i) {
+			bool isP1 = (i == 0);
+			auto player = isP1 ? m_player1 : m_player2;
+			if (!player) continue;
+			auto& p = m_fields->p[i];
 
-		if (m_isPracticeMode && Mod::get()->getSettingValue<bool>("ignore-practice")) return;
-		if (Analyzer::get().clickCount() == 0) return;
+			// Release a press we injected once the real button is no longer held.
+			if (p.injectedHeld && !p.realHeld && now > p.injectTime) {
+				GJBaseGameLayer::handleButton(false, 1, isP1);
+				p.injectedHeld = false;
+			}
 
-		std::string name = m_level ? std::string(m_level->m_levelName) : std::string("Unknown");
-		std::string text = Analyzer::get().report(minClicks(), name);
+			if (!p.active) continue;
 
-		if (Mod::get()->getSettingValue<bool>("save-reports")) {
-			auto dir = Mod::get()->getSaveDir() / "reports";
-			std::error_code ec;
-			std::filesystem::create_directories(dir, ec);
-			auto stamp = static_cast<long long>(std::time(nullptr));
-			auto path = dir / fmt::format("run_{}.txt", stamp);
-			std::ofstream out(path);
-			if (out) out << text;
-		}
+			// now < p.time means the level was restarted since the press.
+			if (player->m_isDead || now < p.time || now - p.time > window) {
+				p.active = false;
+				continue;
+			}
 
-		if (Mod::get()->getSettingValue<bool>("show-popup")) {
-			FLAlertLayer::create("Dynamic", text, "OK")->show();
+			bool onRing = bufferOrbs() && !player->m_touchedRings.empty();
+			bool onGround = bufferGround() && player->m_isOnGround && groundBufferable(player);
+
+			if (onRing) {
+				GJBaseGameLayer::handleButton(true, 1, isP1);
+				p.injectedHeld = true;
+				p.injectTime = now;
+				p.active = false;
+			} else if (onGround) {
+				// Still holding: the game jumps on landing by itself. Otherwise send the press.
+				if (!p.realHeld) {
+					GJBaseGameLayer::handleButton(true, 1, isP1);
+					p.injectedHeld = true;
+					p.injectTime = now;
+				}
+				p.active = false;
+			}
 		}
 	}
 };
