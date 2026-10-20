@@ -1,0 +1,68 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081",
+		"android": "2.2081",
+		"mac": "2.2081",
+		"ios": "2.2081"
+	},
+	"id": "yourname.dynamic",
+	"name": "Dynamic",
+	"version": "v1.0.0",
+	"developer": "yourname",
+	"description": "Input-timing analyzer that helps spot botted or macro-injected runs by comparing hardware input timing to in-game clicks.",
+	"tags": ["utility", "gameplay"],
+	"resources": {
+		"spritesheets": {}
+	},
+	"settings": {
+		"show-hud": {
+			"type": "bool",
+			"name": "Show live HUD",
+			"description": "Show a small live readout of click statistics while playing.",
+			"default": true
+		},
+		"show-popup": {
+			"type": "bool",
+			"name": "Show report on completion",
+			"description": "Show the analysis report in a popup when you complete a level.",
+			"default": true
+		},
+		"save-reports": {
+			"type": "bool",
+			"name": "Save reports to disk",
+			"description": "Write a text report into the mod's save folder (reports/) after each completion.",
+			"default": true
+		},
+		"ignore-practice": {
+			"type": "bool",
+			"name": "Ignore practice mode",
+			"description": "Do not analyze or report runs made in practice mode.",
+			"default": true
+		},
+		"min-clicks": {
+			"type": "int",
+			"name": "Minimum clicks for verdict",
+			"description": "A run needs at least this many clicks before statistical flags are raised.",
+			"default": 30,
+			"min": 10,
+			"max": 1000,
+			"control": {
+				"input": true,
+				"slider": true
+			}
+		},
+		"input-window-ms": {
+			"type": "int",
+			"name": "Input match window (ms)",
+			"description": "How old a hardware input may be and still be matched to an in-game click.",
+			"default": 100,
+			"min": 20,
+			"max": 500,
+			"control": {
+				"input": true,
+				"slider": true
+			}
+		}
+	}
+}
